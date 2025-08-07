@@ -93,6 +93,22 @@ pub fn request(url: &Url) -> Result<HttpResponse, String> {
     }
 }
 
+pub fn strip_html_tags(text: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+
+    for char in text.chars() {
+        match char {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(char),
+            _ => {}
+        }
+    }
+
+    result
+}
+
 impl Url {
     pub fn new(raw_url: &str) -> Result<Url, String> {
         let parts: Vec<&str> = raw_url.splitn(2, "://").collect();
@@ -116,22 +132,6 @@ impl Url {
         };
 
         Ok(Url { scheme, host, path })
-    }
-
-    pub fn strip_html_tags(text: &str) -> String {
-        let mut result = String::new();
-        let mut in_tag = false;
-
-        for char in text.chars() {
-            match char {
-                '<' => in_tag = true,
-                '>' => in_tag = false,
-                _ if !in_tag => result.push(char),
-                _ => {}
-            }
-        }
-
-        result
     }
 }
 
@@ -515,15 +515,15 @@ mod tests {
     #[test]
     fn test_html_tag_stripping() {
         assert_eq!(
-            Url::strip_html_tags("<html><body>Hello World</body></html>"),
+            strip_html_tags("<html><body>Hello World</body></html>"),
             "Hello World"
         );
         assert_eq!(
-            Url::strip_html_tags("<p>Text with <strong>bold</strong> content</p>"),
+            strip_html_tags("<p>Text with <strong>bold</strong> content</p>"),
             "Text with bold content"
         );
-        assert_eq!(Url::strip_html_tags("No tags here"), "No tags here");
-        assert_eq!(Url::strip_html_tags(""), "");
+        assert_eq!(strip_html_tags("No tags here"), "No tags here");
+        assert_eq!(strip_html_tags(""), "");
     }
 
     #[test]
@@ -544,7 +544,7 @@ mod tests {
         println!("Headers: {:?}", response.headers);
         println!("Raw body: {}", response.body);
 
-        let clean_body = Url::strip_html_tags(&response.body);
+        let clean_body = strip_html_tags(&response.body);
         println!("Body without HTML tags: {}", clean_body);
 
         assert_eq!(response.status, 200);

@@ -1,5 +1,4 @@
-use learn_browser::socket::HttpSocket;
-use learn_browser::url::{Url, request};
+use learn_browser::url::{Url, request, strip_html_tags};
 use std::env;
 
 fn main() -> Result<(), String> {
@@ -55,7 +54,7 @@ fn main() -> Result<(), String> {
             println!();
 
             // Strip HTML tags and show clean text
-            let clean_text = Url::strip_html_tags(&response.body);
+            let clean_text = strip_html_tags(&response.body);
             println!("🧹 Clean Text (HTML tags removed, first 300 characters):");
             println!("--------------------------------------------------------");
             let clean_preview = if clean_text.len() > 300 {
