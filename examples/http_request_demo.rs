@@ -1,5 +1,5 @@
-use learn_browser::url::{Url, request};
 use learn_browser::socket::HttpSocket;
+use learn_browser::url::{Url, request};
 use std::env;
 
 fn main() -> Result<(), String> {
@@ -17,18 +17,20 @@ fn main() -> Result<(), String> {
     };
 
     // Create a URL and separate socket
-    let mut socket = HttpSocket::new();
     let url = Url::new(url_str)?;
-    
+
     println!("📋 URL Details:");
     println!("  Host: {}", url.host);
     println!("  Path: {}", url.path);
     println!();
 
     // Make the HTTP request using the independent request function
-    println!("🚀 Making HTTP request to {} using independent request function...\n", url.host);
-    
-    match request(&url, &mut socket) {
+    println!(
+        "🚀 Making HTTP request to {} using independent request function...\n",
+        url.host
+    );
+
+    match request(&url) {
         Ok(response) => {
             // Display response details
             println!("📥 Response received:");
