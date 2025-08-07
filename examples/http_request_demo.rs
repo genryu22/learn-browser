@@ -1,4 +1,4 @@
-use learn_browser::url::Url;
+use learn_browser::url::{Url, request};
 use learn_browser::socket::HttpSocket;
 use std::env;
 
@@ -16,19 +16,19 @@ fn main() -> Result<(), String> {
         "http://example.org/"
     };
 
-    // Create a URL with HttpSocket
-    let socket = HttpSocket::new();
-    let mut url = Url::new(url_str, socket)?;
+    // Create a URL and separate socket
+    let mut socket = HttpSocket::new();
+    let url = Url::new(url_str)?;
     
     println!("📋 URL Details:");
     println!("  Host: {}", url.host);
     println!("  Path: {}", url.path);
     println!();
 
-    // Make the HTTP request
-    println!("🚀 Making HTTP request to {}...\n", url.host);
+    // Make the HTTP request using the independent request function
+    println!("🚀 Making HTTP request to {} using independent request function...\n", url.host);
     
-    match url.request() {
+    match request(&url, &mut socket) {
         Ok(response) => {
             // Display response details
             println!("📥 Response received:");
@@ -53,7 +53,7 @@ fn main() -> Result<(), String> {
             println!();
 
             // Strip HTML tags and show clean text
-            let clean_text = Url::<HttpSocket>::strip_html_tags(&response.body);
+            let clean_text = Url::strip_html_tags(&response.body);
             println!("🧹 Clean Text (HTML tags removed, first 300 characters):");
             println!("--------------------------------------------------------");
             let clean_preview = if clean_text.len() > 300 {

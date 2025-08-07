@@ -22,15 +22,64 @@ pub struct HttpResponse {
 }
 
 #[derive(Debug)]
-pub struct Url<T: Socket + std::fmt::Debug> {
+pub struct Url {
     pub scheme: Scheme,
     pub host: String,
     pub path: String,
-    pub socket: T,
 }
 
-impl<T: Socket + std::fmt::Debug> Url<T> {
-    pub fn new(raw_url: &str, socket: T) -> Result<Url<T>, String> {
+pub fn request<T: Socket + std::fmt::Debug>(url: &Url, socket: &mut T) -> Result<HttpResponse, String> {
+    socket.connect(&url.host, 80)?;
+
+    let http_request = format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", url.path, url.host);
+
+    socket.send(http_request.as_bytes())?;
+
+    // Read status line
+    let status_line = socket.read_line()?;
+    let status_line = status_line.trim_end_matches("\r\n");
+    let status_parts: Vec<&str> = status_line.split(' ').collect();
+
+    if status_parts.len() < 3 {
+        return Err("Invalid HTTP status line".to_string());
+    }
+
+    let version = status_parts[0].to_string();
+    let status = status_parts[1]
+        .parse::<u16>()
+        .map_err(|_| "Invalid HTTP status code".to_string())?;
+    let explanation = status_parts[2..].join(" ");
+
+    // Read headers
+    let mut headers = HashMap::new();
+    loop {
+        let line = socket.read_line()?;
+        if line == "\r\n" {
+            break;
+        }
+
+        let line = line.trim_end_matches("\r\n");
+        if let Some(colon_pos) = line.find(':') {
+            let header = line[..colon_pos].trim().to_lowercase();
+            let value = line[colon_pos + 1..].trim().to_string();
+            headers.insert(header, value);
+        }
+    }
+
+    // Read body
+    let body = socket.read_to_string()?;
+
+    Ok(HttpResponse {
+        version,
+        status,
+        explanation,
+        headers,
+        body,
+    })
+}
+
+impl Url {
+    pub fn new(raw_url: &str) -> Result<Url, String> {
         let parts: Vec<&str> = raw_url.splitn(2, "://").collect();
         if parts.len() != 2 {
             return Err("Invalid URL: missing scheme".to_string());
@@ -54,59 +103,9 @@ impl<T: Socket + std::fmt::Debug> Url<T> {
             scheme,
             host,
             path,
-            socket,
         })
     }
 
-    pub fn request(&mut self) -> Result<HttpResponse, String> {
-        self.socket.connect(&self.host, 80)?;
-
-        let http_request = format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", self.path, self.host);
-
-        self.socket.send(http_request.as_bytes())?;
-
-        // Read status line
-        let status_line = self.socket.read_line()?;
-        let status_line = status_line.trim_end_matches("\r\n");
-        let status_parts: Vec<&str> = status_line.split(' ').collect();
-
-        if status_parts.len() < 3 {
-            return Err("Invalid HTTP status line".to_string());
-        }
-
-        let version = status_parts[0].to_string();
-        let status = status_parts[1]
-            .parse::<u16>()
-            .map_err(|_| "Invalid HTTP status code".to_string())?;
-        let explanation = status_parts[2..].join(" ");
-
-        // Read headers
-        let mut headers = HashMap::new();
-        loop {
-            let line = self.socket.read_line()?;
-            if line == "\r\n" {
-                break;
-            }
-
-            let line = line.trim_end_matches("\r\n");
-            if let Some(colon_pos) = line.find(':') {
-                let header = line[..colon_pos].trim().to_lowercase();
-                let value = line[colon_pos + 1..].trim().to_string();
-                headers.insert(header, value);
-            }
-        }
-
-        // Read body
-        let body = self.socket.read_to_string()?;
-
-        Ok(HttpResponse {
-            version,
-            status,
-            explanation,
-            headers,
-            body,
-        })
-    }
 
     pub fn strip_html_tags(text: &str) -> String {
         let mut result = String::new();
@@ -273,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_url_new_with_path() {
-        let url = Url::new("http://example.com/path/to/resource", MockSocket).unwrap();
+        let url = Url::new("http://example.com/path/to/resource").unwrap();
         assert_eq!(url.scheme, Scheme::Http);
         assert_eq!(url.host, "example.com");
         assert_eq!(url.path, "/path/to/resource");
@@ -281,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_url_new_without_path() {
-        let url = Url::new("http://google.com", MockSocket).unwrap();
+        let url = Url::new("http://google.com").unwrap();
         assert_eq!(url.scheme, Scheme::Http);
         assert_eq!(url.host, "google.com");
         assert_eq!(url.path, "/");
@@ -289,75 +288,76 @@ mod tests {
 
     #[test]
     fn test_url_new_invalid() {
-        let result = Url::new("invalid-url", MockSocket);
+        let result = Url::new("invalid-url");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Invalid URL: missing scheme");
     }
 
     #[test]
     fn test_url_new_unsupported_scheme() {
-        let result = Url::new("https://example.com", MockSocket);
+        let result = Url::new("https://example.com");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Unsupported scheme: https");
     }
 
     #[test]
     fn test_socket_connect() {
-        let mut url = Url::new("http://example.com", MockSocket).unwrap();
-        let result = url.socket.connect("example.com", 80);
+        let _url = Url::new("http://example.com").unwrap();
+        let mut socket = MockSocket;
+        let result = socket.connect("example.com", 80);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_url_request() {
-        let socket = TestSocket::with_full_response();
-        let mut url = Url::new("http://example.com/path", socket).unwrap();
-        let result = url.request();
+        let mut socket = TestSocket::with_full_response();
+        let url = Url::new("http://example.com/path").unwrap();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_url_request_connect_failed() {
-        let socket = TestSocket::with_connect_failure();
-        let mut url = Url::new("http://example.com/path", socket).unwrap();
+        let mut socket = TestSocket::with_connect_failure();
+        let url = Url::new("http://example.com/path").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Connection failed");
 
-        assert_eq!(url.socket.connect_calls.len(), 1);
-        assert_eq!(url.socket.connect_calls[0], ("example.com".to_string(), 80));
+        assert_eq!(socket.connect_calls.len(), 1);
+        assert_eq!(socket.connect_calls[0], ("example.com".to_string(), 80));
 
-        assert_eq!(url.socket.send_calls.len(), 0);
+        assert_eq!(socket.send_calls.len(), 0);
     }
 
     #[test]
     fn test_url_request_send_failed() {
-        let socket = TestSocket::with_send_failure();
-        let mut url = Url::new("http://example.com/path", socket).unwrap();
+        let mut socket = TestSocket::with_send_failure();
+        let url = Url::new("http://example.com/path").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Send failed");
 
-        assert_eq!(url.socket.connect_calls.len(), 1);
-        assert_eq!(url.socket.connect_calls[0], ("example.com".to_string(), 80));
+        assert_eq!(socket.connect_calls.len(), 1);
+        assert_eq!(socket.connect_calls[0], ("example.com".to_string(), 80));
 
-        assert_eq!(url.socket.send_calls.len(), 1);
+        assert_eq!(socket.send_calls.len(), 1);
         assert_eq!(
-            url.socket.send_calls[0],
+            socket.send_calls[0],
             "GET /path HTTP/1.0\r\nHost: example.com\r\n\r\n"
         );
     }
 
     #[test]
     fn test_url_request_success() {
-        let socket = TestSocket::with_full_response();
-        let mut url = Url::new("http://example.com/path/to/resource", socket).unwrap();
+        let mut socket = TestSocket::with_full_response();
+        let url = Url::new("http://example.com/path/to/resource").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
 
         assert!(result.is_ok());
 
@@ -375,25 +375,25 @@ mod tests {
         );
         assert_eq!(response.body, "Hello, World!");
 
-        assert_eq!(url.socket.connect_calls.len(), 1);
-        assert_eq!(url.socket.connect_calls[0], ("example.com".to_string(), 80));
+        assert_eq!(socket.connect_calls.len(), 1);
+        assert_eq!(socket.connect_calls[0], ("example.com".to_string(), 80));
 
-        assert_eq!(url.socket.send_calls.len(), 1);
+        assert_eq!(socket.send_calls.len(), 1);
         assert_eq!(
-            url.socket.send_calls[0],
+            socket.send_calls[0],
             "GET /path/to/resource HTTP/1.0\r\nHost: example.com\r\n\r\n"
         );
     }
 
     #[test]
     fn test_http_response_parsing_status_line() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.0 404 Not Found\r\n".to_string(),
             "\r\n".to_string(),
         ]);
-        let mut url = Url::new("http://example.com/notfound", socket).unwrap();
+        let url = Url::new("http://example.com/notfound").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_http_response_parsing_with_headers() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 200 OK\r\n".to_string(),
             "Server: Apache/2.4.41\r\n".to_string(),
             "Content-Type: application/json\r\n".to_string(),
@@ -414,9 +414,9 @@ mod tests {
             "\r\n".to_string(),
             "{\"message\": \"success\"}".to_string(),
         ]);
-        let mut url = Url::new("http://api.example.com/data", socket).unwrap();
+        let url = Url::new("http://api.example.com/data").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_http_response_parsing_multiline_body() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 200 OK\r\n".to_string(),
             "Content-Type: text/plain\r\n".to_string(),
             "\r\n".to_string(),
@@ -448,9 +448,9 @@ mod tests {
             "Line 2\n".to_string(),
             "Line 3".to_string(),
         ]);
-        let mut url = Url::new("http://example.com/text", socket).unwrap();
+        let url = Url::new("http://example.com/text").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -459,20 +459,20 @@ mod tests {
 
     #[test]
     fn test_http_response_parsing_invalid_status_line() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 ABC Not Found\r\n".to_string(),
             "\r\n".to_string(),
         ]);
-        let mut url = Url::new("http://example.com/invalid", socket).unwrap();
+        let url = Url::new("http://example.com/invalid").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Invalid HTTP status code");
     }
 
     #[test]
     fn test_http_response_parsing_headers_case_insensitive() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 200 OK\r\n".to_string(),
             "Content-Type: text/html\r\n".to_string(),
             "CONTENT-LENGTH: 5\r\n".to_string(),
@@ -480,9 +480,9 @@ mod tests {
             "\r\n".to_string(),
             "Hello".to_string(),
         ]);
-        let mut url = Url::new("http://example.com/case", socket).unwrap();
+        let url = Url::new("http://example.com/case").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -503,23 +503,23 @@ mod tests {
     #[test]
     fn test_html_tag_stripping() {
         assert_eq!(
-            Url::<MockSocket>::strip_html_tags("<html><body>Hello World</body></html>"),
+            Url::strip_html_tags("<html><body>Hello World</body></html>"),
             "Hello World"
         );
         assert_eq!(
-            Url::<MockSocket>::strip_html_tags("<p>Text with <strong>bold</strong> content</p>"),
+            Url::strip_html_tags("<p>Text with <strong>bold</strong> content</p>"),
             "Text with bold content"
         );
         assert_eq!(
-            Url::<MockSocket>::strip_html_tags("No tags here"),
+            Url::strip_html_tags("No tags here"),
             "No tags here"
         );
-        assert_eq!(Url::<MockSocket>::strip_html_tags(""), "");
+        assert_eq!(Url::strip_html_tags(""), "");
     }
 
     #[test]
     fn example_request_with_html_stripping() {
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 200 OK\r\n".to_string(),
             "Content-Type: text/html\r\n".to_string(),
             "Content-Length: 50\r\n".to_string(),
@@ -528,14 +528,14 @@ mod tests {
             "<body><h1>Welcome!</h1><p>This is a test page.</p></body></html>".to_string(),
         ]);
 
-        let mut url = Url::new("http://example.com", socket).unwrap();
-        let response = url.request().unwrap();
+        let url = Url::new("http://example.com").unwrap();
+        let response = request(&url, &mut socket).unwrap();
 
         println!("Status: {}", response.status);
         println!("Headers: {:?}", response.headers);
         println!("Raw body: {}", response.body);
 
-        let clean_body = Url::<TestSocket>::strip_html_tags(&response.body);
+        let clean_body = Url::strip_html_tags(&response.body);
         println!("Body without HTML tags: {}", clean_body);
 
         assert_eq!(response.status, 200);
@@ -544,30 +544,30 @@ mod tests {
 
     #[test]
     fn test_eof_before_status_line() {
-        let socket = TestSocket::with_eof_before_status();
-        let mut url = Url::new("http://example.com", socket).unwrap();
+        let mut socket = TestSocket::with_eof_before_status();
+        let url = Url::new("http://example.com").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "No more lines to read");
     }
 
     #[test]
     fn test_eof_after_status_line() {
-        let socket = TestSocket::with_eof_after_status();
-        let mut url = Url::new("http://example.com", socket).unwrap();
+        let mut socket = TestSocket::with_eof_after_status();
+        let url = Url::new("http://example.com").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "No more lines to read");
     }
 
     #[test]
     fn test_eof_during_headers() {
-        let socket = TestSocket::with_eof_during_headers();
-        let mut url = Url::new("http://example.com", socket).unwrap();
+        let mut socket = TestSocket::with_eof_during_headers();
+        let url = Url::new("http://example.com").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "No more lines to read");
     }
@@ -575,16 +575,16 @@ mod tests {
     #[test]
     fn test_eof_in_body_is_ok() {
         // EOF during body reading should be OK - that's how we know the body is complete
-        let socket = TestSocket::with_response_lines(vec![
+        let mut socket = TestSocket::with_response_lines(vec![
             "HTTP/1.1 200 OK\r\n".to_string(),
             "Content-Type: text/plain\r\n".to_string(),
             "\r\n".to_string(),
             "Partial body".to_string(),
             // EOF happens here during body reading - this should be OK
         ]);
-        let mut url = Url::new("http://example.com", socket).unwrap();
+        let url = Url::new("http://example.com").unwrap();
 
-        let result = url.request();
+        let result = request(&url, &mut socket);
         assert!(result.is_ok());
 
         let response = result.unwrap();
